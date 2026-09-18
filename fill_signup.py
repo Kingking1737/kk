@@ -13,12 +13,13 @@ FAKE_DATA = {
 }
 
 SIGNUP_URL = "https://www.instagram.com/accounts/emailsignup/?hl=en"
-SS_FILLED    = "instagram_signup_filled.png"     # بعد از پر کردن فرم
-SS_SUBMIT    = "instagram_after_submit.png"      # بعد از Submit
-SS_CAPTCHA   = "instagram_captcha_clicked.png"   # بعد از کلیک روی reCAPTCHA
-SS_ERROR     = "error_missing_element.png"       # اگر خطایی رخ داد
+SS_FILLED  = "instagram_signup_filled.png"
+SS_MODAL   = "instagram_captcha_modal.png"
+SS_AFTER   = "instagram_captcha_clicked.png"
+SS_ERROR   = "error_missing_element.png"
 
-SUBMIT_WAIT = 10_000  # 10 ثانیه
+WAIT_AFTER_SUBMIT = 10_000   # 10 ثانیه
+WAIT_AFTER_CLICK  = 10_000   # 10 ثانیه
 
 
 async def try_selectors(page, name, selectors, timeout_per=4000):
@@ -28,14 +29,14 @@ async def try_selectors(page, name, selectors, timeout_per=4000):
             if await loc.count() == 0:
                 continue
             await loc.wait_for(state="visible", timeout=timeout_per)
-            print(f"  ✅ {name} → match با: {sel}")
+            print(f"  ✅ {name} → {sel}")
             return loc
         except PlaywrightTimeoutError:
             continue
         except Exception as e:
-            print(f"     ⚠️  خطا در '{sel}': {e}")
+            print(f"     ⚠️  {sel}: {e}")
             continue
-    print(f"  ❌ {name} → هیچ سلکتوری جواب نداد")
+    print(f"  ❌ {name} → پیدا نشد")
     return None
 
 
@@ -44,9 +45,9 @@ async def select_dropdown(page, combobox, value):
     await combobox.click()
     await page.wait_for_timeout(800)
     option = page.get_by_role("option", name=value, exact=True)
-    count = await option.count()
-    print(f"    {count} گزینه با متن دقیق '{value}' پیدا شد")
-    for i in range(count):
+    n = await option.count()
+    print(f"    {n} گزینه با متن دقیق '{value}'")
+    for i in range(n):
         cand = option.nth(i)
         try:
             if await cand.is_visible():
@@ -59,35 +60,39 @@ async def select_dropdown(page, combobox, value):
     raise RuntimeError(f"گزینه‌ی '{value}' visible پیدا نشد")
 
 
-async def recaptcha_exists(page):
+async def find_captcha_checkbox(page, timeout_ms=8000):
     """
-    بررسی می‌کند آیا reCAPTCHA در صفحه هست یا نه.
-    reCAPTCHA اینستاگرام داخل iframe بارگذاری می‌شود.
+    دنبال چک‌باکس reCAPTCHA داخل iframe می‌گردد.
     """
-    # 1) iframe های reCAPTCHA
-    frames = page.locator(
-        "iframe[src*='recaptcha'], iframe[title*='reCAPTCHA' i], iframe[title*='recaptcha' i]"
-    )
-    n = await frames.count()
-    print(f"    تعداد iframe های reCAPTCHA: {n}")
-    if n == 0:
-        return None
+    print("  🔎 جستجوی iframe های reCAPTCHA...")
+    candidates = [
+        "iframe[src*='recaptcha']",
+        "iframe[title*='reCAPTCHA' i]",
+        "iframe[title*='recaptcha' i]",
+    ]
 
-    # 2) داخل اولین iframe دنبال چک‌باکس بگرد
-    for i in range(n):
-        try:
-            fl = page.frame_locator(
-                "iframe[src*='recaptcha'], iframe[title*='reCAPTCHA' i], iframe[title*='recaptcha' i]"
-            ).nth(i)
-            checkbox = fl.locator(
-                "#recaptcha-anchor, .recaptcha-checkbox, .recaptcha-checkbox-border"
-            ).first
-            if await checkbox.count() > 0 and await checkbox.is_visible():
-                print(f"    ✅ چک‌باکس reCAPTCHA در iframe #{i} پیدا شد")
-                return checkbox
-        except Exception as e:
-            print(f"    ⚠️  خطا در iframe #{i}: {e}")
-            continue
+    deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
+    while asyncio.get_event_loop().time() < deadline:
+        for sel in candidates:
+            cnt = await page.locator(sel).count()
+            if cnt == 0:
+                continue
+            print(f"    {cnt} iframe با سلکتور '{sel}'")
+            for i in range(cnt):
+                try:
+                    fl = page.frame_locator(sel).nth(i)
+                    checkbox = fl.locator("#recaptcha-anchor, .recaptcha-checkbox").first
+                    if await checkbox.count() == 0:
+                        continue
+                    if await checkbox.is_visible():
+                        print(f"    ✅ چک‌باکس در iframe #{i} پیدا شد")
+                        return checkbox
+                except Exception as e:
+                    print(f"    ⚠️  iframe #{i}: {e}")
+                    continue
+        await page.wait_for_timeout(500)
+
+    print("    ❌ چک‌باکس reCAPTCHA پیدا نشد")
     return None
 
 
@@ -135,14 +140,12 @@ async def main():
                 "fullname": [
                     "//label[normalize-space()='Full name']/preceding-sibling::input",
                     "input[aria-label='Full name']",
-                    "input[aria-label='Full Name']",
                 ],
                 "username": ["input[aria-label='Username']"],
             }
 
-            print("🔍 بررسی و پیدا کردن المان‌ها:")
-            locators = {}
-            missing = []
+            locators, missing = {}, []
+            print("🔍 بررسی المان‌ها:")
             for name, sels in fields.items():
                 loc = await try_selectors(page, name, sels)
                 if loc is None:
@@ -150,71 +153,83 @@ async def main():
                 locators[name] = loc
 
             if missing:
-                print(f"\n❌ المان‌های پیدا نشده: {missing}")
+                print(f"\n❌ پیدا نشده: {missing}")
                 await page.screenshot(path=SS_ERROR, full_page=True)
-                print(f"📸 اسکرین‌شات خطا: {SS_ERROR}")
                 await browser.close()
                 sys.exit(1)
 
             print("\n✏️  پر کردن فیلدها...")
-            await locators["email"].fill(FAKE_DATA["email"]);        print("  ✅ Email")
-            await locators["password"].fill(FAKE_DATA["password"]);  print("  ✅ Password")
-            await select_dropdown(page, locators["year"],  FAKE_DATA["year"]);  print(f"  ✅ Year → {FAKE_DATA['year']}")
-            await select_dropdown(page, locators["month"], FAKE_DATA["month"]); print(f"  ✅ Month → {FAKE_DATA['month']}")
-            await select_dropdown(page, locators["day"],   FAKE_DATA["day"]);   print(f"  ✅ Day → {FAKE_DATA['day']}")
-            await locators["fullname"].fill(FAKE_DATA["fullname"]);  print("  ✅ Full Name")
-            await locators["username"].fill(FAKE_DATA["username"]);  print("  ✅ Username")
+            await locators["email"].fill(FAKE_DATA["email"]);                print("  ✅ Email")
+            await locators["password"].fill(FAKE_DATA["password"]);          print("  ✅ Password")
+            await select_dropdown(page, locators["year"],  FAKE_DATA["year"]);   print(f"  ✅ Year → {FAKE_DATA['year']}")
+            await select_dropdown(page, locators["month"], FAKE_DATA["month"]);  print(f"  ✅ Month → {FAKE_DATA['month']}")
+            await select_dropdown(page, locators["day"],   FAKE_DATA["day"]);    print(f"  ✅ Day → {FAKE_DATA['day']}")
+            await locators["fullname"].fill(FAKE_DATA["fullname"]);          print("  ✅ Full Name")
+            await locators["username"].fill(FAKE_DATA["username"]);          print("  ✅ Username")
 
-            # اسکرین‌شات قبل از Submit
             await page.wait_for_timeout(800)
             await page.screenshot(path=SS_FILLED, full_page=True)
-            print(f"📸 اسکرین‌شات فرم پر شده: {SS_FILLED}")
+            print(f"📸 فرم پر شده: {SS_FILLED}")
 
-            # ── کلیک روی Submit ─────────────────────────────────
+            # ── Submit ──────────────────────────────────────────
             print("\n🖱️  کلیک روی Submit...")
             submit = page.locator(
                 "//div[@role='button'][.//span[normalize-space()='Submit']]"
             ).first
             if await submit.count() == 0:
-                # fallback
                 submit = page.get_by_role("button", name="Submit", exact=True).first
             await submit.scroll_into_view_if_needed()
             await submit.click()
             print("  ✅ Submit کلیک شد.")
 
-            # ── ۱۰ ثانیه صبر ───────────────────────────────────
-            print(f"\n⏳ انتظار {SUBMIT_WAIT/1000:.0f} ثانیه...")
-            await page.wait_for_timeout(SUBMIT_WAIT)
+            # ── ۱۰ ثانیه صبر ────────────────────────────────────
+            print(f"\n⏳ انتظار {WAIT_AFTER_SUBMIT/1000:.0f} ثانیه...")
+            await page.wait_for_timeout(WAIT_AFTER_SUBMIT)
 
-            # ── بررسی وجود reCAPTCHA ────────────────────────────
+            # ── پیدا کردن چک‌باکس reCAPTCHA ────────────────────
             print("\n🔍 بررسی وجود reCAPTCHA...")
-            captcha = await recaptcha_exists(page)
+            checkbox = await find_captcha_checkbox(page)
 
-            if captcha is None:
-                # ── reCAPTCHA نبود → همان‌جا اسکرین‌شات ─────
-                print("  ℹ️  reCAPTCHA ظاهر نشد.")
-                await page.screenshot(path=SS_SUBMIT, full_page=True)
-                print(f"📸 اسکرین‌شات بعد از Submit: {SS_SUBMIT}")
-
+            if checkbox is None:
+                # modal نیامده یا چک‌باکس نیست → اسکرین‌شات و خروج
+                await page.screenshot(path=SS_MODAL, full_page=True)
+                print(f"📸 اسکرین‌شات بعد از Submit: {SS_MODAL}")
+                print("ℹ️  reCAPTCHA پیدا نشد.")
             else:
-                # ── reCAPTCHA بود → کلیک کن، ۱۰ ثانیه صبر، اسکرین‌شات ─
-                print("  🖱️  کلیک روی چک‌باکس reCAPTCHA...")
-                try:
-                    await captcha.click()
-                    print("  ✅ روی reCAPTCHA کلیک شد.")
-                except Exception as e:
-                    print(f"  ⚠️  کلیک روی reCAPTCHA ناموفق: {e}")
-                    # تلاش دوم: با force
-                    try:
-                        await captcha.click(force=True)
-                        print("  ✅ با force کلیک شد.")
-                    except Exception as e2:
-                        print(f"  ❌ کلیک دوم هم نشد: {e2}")
+                # ── اسکرین‌شات قبل از کلیک ─────────────────
+                await page.screenshot(path=SS_MODAL, full_page=True)
+                print(f"📸 اسکرین‌شات modal قبل از کلیک: {SS_MODAL}")
 
-                print(f"\n⏳ انتظار {SUBMIT_WAIT/1000:.0f} ثانیه بعد از کلیک reCAPTCHA...")
-                await page.wait_for_timeout(SUBMIT_WAIT)
-                await page.screenshot(path=SS_CAPTCHA, full_page=True)
-                print(f"📸 اسکرین‌شات بعد از کلیک reCAPTCHA: {SS_CAPTCHA}")
+                # ── کلیک روی چک‌باکس ──────────────────────
+                print("\n🖱️  کلیک روی چک‌باکس 'I'm not a robot'...")
+                clicked = False
+                for attempt in range(3):
+                    try:
+                        await checkbox.scroll_into_view_if_needed()
+                        await checkbox.click(timeout=5000)
+                        clicked = True
+                        print(f"  ✅ کلیک موفق (تلاش #{attempt+1})")
+                        break
+                    except Exception as e:
+                        print(f"  ⚠️  تلاش #{attempt+1} ناموفق: {e}")
+                        await page.wait_for_timeout(700)
+
+                if not clicked:
+                    # تلاش با force
+                    try:
+                        await checkbox.click(force=True, timeout=5000)
+                        print("  ✅ با force کلیک شد")
+                        clicked = True
+                    except Exception as e:
+                        print(f"  ❌ force هم نشد: {e}")
+
+                # ── ۱۰ ثانیه صبر بعد از کلیک ──────────────
+                print(f"\n⏳ انتظار {WAIT_AFTER_CLICK/1000:.0f} ثانیه بعد از کلیک...")
+                await page.wait_for_timeout(WAIT_AFTER_CLICK)
+
+                # ── اسکرین‌شات نهایی ─────────────────────
+                await page.screenshot(path=SS_AFTER, full_page=True)
+                print(f"📸 اسکرین‌شات بعد از کلیک: {SS_AFTER}")
 
             print("\n🎉 تمام شد!")
 
