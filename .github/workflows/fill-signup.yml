@@ -32,7 +32,7 @@ jobs:
           name: instagram-signup-screenshots
           path: |
             instagram_signup_filled.png
-            instagram_after_submit.png
+            instagram_captcha_modal.png
             instagram_captcha_clicked.png
             error_missing_element.png
           if-no-files-found: warn
