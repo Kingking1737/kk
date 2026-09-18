@@ -1,5 +1,4 @@
 import asyncio
-import re
 import sys
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -37,30 +36,29 @@ async def try_selectors(page, name, selectors, timeout_per=4000):
 
 
 async def select_dropdown(page, combobox, value):
-    """باز کردن dropdown و انتخاب گزینه با تطابق دقیق داخل همان listbox."""
-    listbox_id = await combobox.get_attribute("aria-controls")
-    print(f"    listbox id: {listbox_id}")
-
-    # باز کردن dropdown
+    """باز کردن dropdown و کلیک روی اولین گزینه‌ی visible با تطابق دقیق."""
+    await combobox.scroll_into_view_if_needed()
     await combobox.click()
-    await page.wait_for_timeout(700)
+    # صبر تا dropdown باز شود
+    await page.wait_for_timeout(800)
 
-    # اسکوپ به listbox مربوطه + تطابق دقیق
-    if listbox_id:
-        listbox = page.locator(f"#{listbox_id}")
-        await listbox.wait_for(state="visible", timeout=5000)
-        option = listbox.locator("div[role='option']").filter(
-            has_text=re.compile(rf"^{re.escape(value)}$")
-        ).first
-    else:
-        # fallback
-        option = page.locator("div[role='option']").filter(
-            has_text=re.compile(rf"^{re.escape(value)}$")
-        ).first
+    # همه‌ی گزینه‌هایی که accessible name دقیقاً برابر value است
+    option = page.get_by_role("option", name=value, exact=True)
+    count = await option.count()
+    print(f"    {count} گزینه با متن دقیق '{value}' پیدا شد")
 
-    await option.wait_for(state="visible", timeout=5000)
-    await option.click()
-    await page.wait_for_timeout(500)
+    for i in range(count):
+        cand = option.nth(i)
+        try:
+            if await cand.is_visible():
+                await cand.scroll_into_view_if_needed()
+                await cand.click()
+                await page.wait_for_timeout(400)
+                return
+        except Exception:
+            continue
+
+    raise RuntimeError(f"گزینه‌ی '{value}' visible پیدا نشد")
 
 
 async def main():
@@ -99,11 +97,9 @@ async def main():
 
             print("✅ صفحه بارگذاری شد.\n")
 
-            # ── سلکتورهای مقاوم ────────────────────────────────
             fields = {
                 "email": [
                     "//label[normalize-space()='Mobile number or email']/preceding-sibling::input",
-                    "//label[contains(text(), 'Mobile number')]/preceding-sibling::input",
                 ],
                 "password": [
                     "input[type='password']",
@@ -124,7 +120,6 @@ async def main():
                 ],
                 "username": [
                     "input[aria-label='Username']",
-                    "//label[normalize-space()='Username']/preceding-sibling::input",
                 ],
             }
 
@@ -146,31 +141,27 @@ async def main():
 
             print("\n✏️  پر کردن فیلدها...")
 
-            # ── Email ────────────────────────────────────────────
             await locators["email"].fill(FAKE_DATA["email"])
             print("  ✅ Email")
 
-            # ── Password ─────────────────────────────────────────
             await locators["password"].fill(FAKE_DATA["password"])
             print("  ✅ Password")
 
-            # ── Month ────────────────────────────────────────────
-            await select_dropdown(page, locators["month"], FAKE_DATA["month"])
-            print(f"  ✅ Month → {FAKE_DATA['month']}")
-
-            # ── Day ──────────────────────────────────────────────
-            await select_dropdown(page, locators["day"], FAKE_DATA["day"])
-            print(f"  ✅ Day → {FAKE_DATA['day']}")
-
-            # ── Year ─────────────────────────────────────────────
+            # ── ترتیب مهم: اول Year، بعد Month، بعد Day ────────
+            # (چون در بعضی نسخه‌ها listbox مشترک است و ترتیب روی
+            #  گزینه‌های visible اثر می‌گذارد)
             await select_dropdown(page, locators["year"], FAKE_DATA["year"])
             print(f"  ✅ Year → {FAKE_DATA['year']}")
 
-            # ── Full Name ────────────────────────────────────────
+            await select_dropdown(page, locators["month"], FAKE_DATA["month"])
+            print(f"  ✅ Month → {FAKE_DATA['month']}")
+
+            await select_dropdown(page, locators["day"], FAKE_DATA["day"])
+            print(f"  ✅ Day → {FAKE_DATA['day']}")
+
             await locators["fullname"].fill(FAKE_DATA["fullname"])
             print("  ✅ Full Name")
 
-            # ── Username ─────────────────────────────────────────
             await locators["username"].fill(FAKE_DATA["username"])
             print("  ✅ Username")
 
