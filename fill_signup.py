@@ -18,8 +18,8 @@ SS_MODAL   = "instagram_captcha_modal.png"
 SS_AFTER   = "instagram_captcha_clicked.png"
 SS_ERROR   = "error_missing_element.png"
 
-WAIT_AFTER_SUBMIT = 10_000   # 10 ثانیه
-WAIT_AFTER_CLICK  = 10_000   # 10 ثانیه
+WAIT_AFTER_SUBMIT = 10_000
+WAIT_AFTER_CLICK  = 10_000
 
 
 async def try_selectors(page, name, selectors, timeout_per=4000):
@@ -60,39 +60,63 @@ async def select_dropdown(page, combobox, value):
     raise RuntimeError(f"گزینه‌ی '{value}' visible پیدا نشد")
 
 
-async def find_captcha_checkbox(page, timeout_ms=8000):
+async def find_captcha_checkbox(page, timeout_ms=15000):
     """
-    دنبال چک‌باکس reCAPTCHA داخل iframe می‌گردد.
+    reCAPTCHA در iframe#captcha-recaptcha قرار دارد.
+    داخل همان iframe، Google دوباره یک iframe دیگر می‌سازد.
     """
-    print("  🔎 جستجوی iframe های reCAPTCHA...")
-    candidates = [
-        "iframe[src*='recaptcha']",
-        "iframe[title*='reCAPTCHA' i]",
-        "iframe[title*='recaptcha' i]",
+    outer_sel = "iframe#captcha-recaptcha"
+    print(f"  🔎 جستجوی '{outer_sel}'...")
+
+    try:
+        await page.wait_for_selector(outer_sel, state="visible", timeout=timeout_ms)
+        print("    ✅ iframe#captcha-recaptcha visible")
+    except PlaywrightTimeoutError:
+        print("    ❌ iframe#captcha-recaptcha ظاهر نشد")
+        return None
+
+    outer = page.frame_locator(outer_sel)
+
+    # ── ۱) تلاش مستقیم داخل iframe اول ───────────────────────
+    for sel in ["#recaptcha-anchor", ".recaptcha-checkbox-border",
+                ".recaptcha-checkbox", "div.recaptcha-checkbox"]:
+        try:
+            cb = outer.locator(sel).first
+            if await cb.count() > 0 and await cb.is_visible(timeout=2000):
+                print(f"    ✅ چک‌باکس پیدا شد (level 1): {sel}")
+                return cb
+        except Exception:
+            pass
+
+    # ── ۲) اگر نبود، داخل iframe تودرتوی Google ─────────────
+    nested_sels = [
+        "iframe[src*='recaptcha/api2/anchor']",
+        "iframe[src*='google.com/recaptcha']",
+        "iframe[title*='reCAPTCHA']",
+        "iframe[title*='recaptcha']",
     ]
+    for nsel in nested_sels:
+        try:
+            nested = outer.frame_locator(nsel)
+            cb = nested.locator("#recaptcha-anchor").first
+            if await cb.count() > 0:
+                print(f"    ✅ چک‌باکس پیدا شد (level 2): {nsel}")
+                return cb
+        except Exception:
+            pass
 
-    deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
-    while asyncio.get_event_loop().time() < deadline:
-        for sel in candidates:
-            cnt = await page.locator(sel).count()
-            if cnt == 0:
-                continue
-            print(f"    {cnt} iframe با سلکتور '{sel}'")
-            for i in range(cnt):
-                try:
-                    fl = page.frame_locator(sel).nth(i)
-                    checkbox = fl.locator("#recaptcha-anchor, .recaptcha-checkbox").first
-                    if await checkbox.count() == 0:
-                        continue
-                    if await checkbox.is_visible():
-                        print(f"    ✅ چک‌باکس در iframe #{i} پیدا شد")
-                        return checkbox
-                except Exception as e:
-                    print(f"    ⚠️  iframe #{i}: {e}")
-                    continue
-        await page.wait_for_timeout(500)
+    # ── ۳) چک‌باکس border در iframe تودرتو ─────────────────
+    for nsel in nested_sels:
+        try:
+            nested = outer.frame_locator(nsel)
+            cb = nested.locator(".recaptcha-checkbox-border, .recaptcha-checkbox").first
+            if await cb.count() > 0:
+                print(f"    ✅ چک‌باکس border پیدا شد: {nsel}")
+                return cb
+        except Exception:
+            pass
 
-    print("    ❌ چک‌باکس reCAPTCHA پیدا نشد")
+    print("    ❌ هیچ چک‌باکسی داخل iframe پیدا نشد")
     return None
 
 
@@ -182,25 +206,20 @@ async def main():
             await submit.click()
             print("  ✅ Submit کلیک شد.")
 
-            # ── ۱۰ ثانیه صبر ────────────────────────────────────
             print(f"\n⏳ انتظار {WAIT_AFTER_SUBMIT/1000:.0f} ثانیه...")
             await page.wait_for_timeout(WAIT_AFTER_SUBMIT)
 
-            # ── پیدا کردن چک‌باکس reCAPTCHA ────────────────────
             print("\n🔍 بررسی وجود reCAPTCHA...")
             checkbox = await find_captcha_checkbox(page)
 
             if checkbox is None:
-                # modal نیامده یا چک‌باکس نیست → اسکرین‌شات و خروج
                 await page.screenshot(path=SS_MODAL, full_page=True)
                 print(f"📸 اسکرین‌شات بعد از Submit: {SS_MODAL}")
                 print("ℹ️  reCAPTCHA پیدا نشد.")
             else:
-                # ── اسکرین‌شات قبل از کلیک ─────────────────
                 await page.screenshot(path=SS_MODAL, full_page=True)
                 print(f"📸 اسکرین‌شات modal قبل از کلیک: {SS_MODAL}")
 
-                # ── کلیک روی چک‌باکس ──────────────────────
                 print("\n🖱️  کلیک روی چک‌باکس 'I'm not a robot'...")
                 clicked = False
                 for attempt in range(3):
@@ -215,19 +234,15 @@ async def main():
                         await page.wait_for_timeout(700)
 
                 if not clicked:
-                    # تلاش با force
                     try:
                         await checkbox.click(force=True, timeout=5000)
                         print("  ✅ با force کلیک شد")
-                        clicked = True
                     except Exception as e:
                         print(f"  ❌ force هم نشد: {e}")
 
-                # ── ۱۰ ثانیه صبر بعد از کلیک ──────────────
                 print(f"\n⏳ انتظار {WAIT_AFTER_CLICK/1000:.0f} ثانیه بعد از کلیک...")
                 await page.wait_for_timeout(WAIT_AFTER_CLICK)
 
-                # ── اسکرین‌شات نهایی ─────────────────────
                 await page.screenshot(path=SS_AFTER, full_page=True)
                 print(f"📸 اسکرین‌شات بعد از کلیک: {SS_AFTER}")
 
