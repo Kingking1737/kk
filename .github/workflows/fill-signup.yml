@@ -2,9 +2,6 @@ name: Instagram Signup Form Filler
 
 "on":
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 jobs:
   fill-signup:
@@ -35,6 +32,8 @@ jobs:
           name: instagram-signup-screenshots
           path: |
             instagram_signup_filled.png
+            instagram_after_submit.png
+            instagram_captcha_clicked.png
             error_missing_element.png
           if-no-files-found: warn
           retention-days: 30
