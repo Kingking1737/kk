@@ -13,8 +13,12 @@ FAKE_DATA = {
 }
 
 SIGNUP_URL = "https://www.instagram.com/accounts/emailsignup/?hl=en"
-SCREENSHOT_FINAL = "instagram_signup_filled.png"
-SCREENSHOT_ERROR = "error_missing_element.png"
+SS_FILLED    = "instagram_signup_filled.png"     # بعد از پر کردن فرم
+SS_SUBMIT    = "instagram_after_submit.png"      # بعد از Submit
+SS_CAPTCHA   = "instagram_captcha_clicked.png"   # بعد از کلیک روی reCAPTCHA
+SS_ERROR     = "error_missing_element.png"       # اگر خطایی رخ داد
+
+SUBMIT_WAIT = 10_000  # 10 ثانیه
 
 
 async def try_selectors(page, name, selectors, timeout_per=4000):
@@ -36,17 +40,12 @@ async def try_selectors(page, name, selectors, timeout_per=4000):
 
 
 async def select_dropdown(page, combobox, value):
-    """باز کردن dropdown و کلیک روی اولین گزینه‌ی visible با تطابق دقیق."""
     await combobox.scroll_into_view_if_needed()
     await combobox.click()
-    # صبر تا dropdown باز شود
     await page.wait_for_timeout(800)
-
-    # همه‌ی گزینه‌هایی که accessible name دقیقاً برابر value است
     option = page.get_by_role("option", name=value, exact=True)
     count = await option.count()
     print(f"    {count} گزینه با متن دقیق '{value}' پیدا شد")
-
     for i in range(count):
         cand = option.nth(i)
         try:
@@ -57,8 +56,39 @@ async def select_dropdown(page, combobox, value):
                 return
         except Exception:
             continue
-
     raise RuntimeError(f"گزینه‌ی '{value}' visible پیدا نشد")
+
+
+async def recaptcha_exists(page):
+    """
+    بررسی می‌کند آیا reCAPTCHA در صفحه هست یا نه.
+    reCAPTCHA اینستاگرام داخل iframe بارگذاری می‌شود.
+    """
+    # 1) iframe های reCAPTCHA
+    frames = page.locator(
+        "iframe[src*='recaptcha'], iframe[title*='reCAPTCHA' i], iframe[title*='recaptcha' i]"
+    )
+    n = await frames.count()
+    print(f"    تعداد iframe های reCAPTCHA: {n}")
+    if n == 0:
+        return None
+
+    # 2) داخل اولین iframe دنبال چک‌باکس بگرد
+    for i in range(n):
+        try:
+            fl = page.frame_locator(
+                "iframe[src*='recaptcha'], iframe[title*='reCAPTCHA' i], iframe[title*='recaptcha' i]"
+            ).nth(i)
+            checkbox = fl.locator(
+                "#recaptcha-anchor, .recaptcha-checkbox, .recaptcha-checkbox-border"
+            ).first
+            if await checkbox.count() > 0 and await checkbox.is_visible():
+                print(f"    ✅ چک‌باکس reCAPTCHA در iframe #{i} پیدا شد")
+                return checkbox
+        except Exception as e:
+            print(f"    ⚠️  خطا در iframe #{i}: {e}")
+            continue
+    return None
 
 
 async def main():
@@ -83,7 +113,6 @@ async def main():
             await page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=60_000)
             await page.wait_for_timeout(4000)
 
-            # بستن بنر کوکی‌ها اگر بود
             for txt in ["Allow all cookies", "Accept all", "Only allow essential cookies", "Accept"]:
                 try:
                     btn = page.get_by_role("button", name=txt, exact=False).first
@@ -98,29 +127,17 @@ async def main():
             print("✅ صفحه بارگذاری شد.\n")
 
             fields = {
-                "email": [
-                    "//label[normalize-space()='Mobile number or email']/preceding-sibling::input",
-                ],
-                "password": [
-                    "input[type='password']",
-                ],
-                "month": [
-                    "div[aria-label='Select Month']",
-                ],
-                "day": [
-                    "div[aria-label='Select Day']",
-                ],
-                "year": [
-                    "div[aria-label='Select Year']",
-                ],
+                "email":    ["//label[normalize-space()='Mobile number or email']/preceding-sibling::input"],
+                "password": ["input[type='password']"],
+                "month":    ["div[aria-label='Select Month']"],
+                "day":      ["div[aria-label='Select Day']"],
+                "year":     ["div[aria-label='Select Year']"],
                 "fullname": [
                     "//label[normalize-space()='Full name']/preceding-sibling::input",
                     "input[aria-label='Full name']",
                     "input[aria-label='Full Name']",
                 ],
-                "username": [
-                    "input[aria-label='Username']",
-                ],
+                "username": ["input[aria-label='Username']"],
             }
 
             print("🔍 بررسی و پیدا کردن المان‌ها:")
@@ -134,66 +151,84 @@ async def main():
 
             if missing:
                 print(f"\n❌ المان‌های پیدا نشده: {missing}")
-                await page.screenshot(path=SCREENSHOT_ERROR, full_page=True)
-                print(f"📸 اسکرین‌شات خطا: {SCREENSHOT_ERROR}")
+                await page.screenshot(path=SS_ERROR, full_page=True)
+                print(f"📸 اسکرین‌شات خطا: {SS_ERROR}")
                 await browser.close()
                 sys.exit(1)
 
             print("\n✏️  پر کردن فیلدها...")
+            await locators["email"].fill(FAKE_DATA["email"]);        print("  ✅ Email")
+            await locators["password"].fill(FAKE_DATA["password"]);  print("  ✅ Password")
+            await select_dropdown(page, locators["year"],  FAKE_DATA["year"]);  print(f"  ✅ Year → {FAKE_DATA['year']}")
+            await select_dropdown(page, locators["month"], FAKE_DATA["month"]); print(f"  ✅ Month → {FAKE_DATA['month']}")
+            await select_dropdown(page, locators["day"],   FAKE_DATA["day"]);   print(f"  ✅ Day → {FAKE_DATA['day']}")
+            await locators["fullname"].fill(FAKE_DATA["fullname"]);  print("  ✅ Full Name")
+            await locators["username"].fill(FAKE_DATA["username"]);  print("  ✅ Username")
 
-            await locators["email"].fill(FAKE_DATA["email"])
-            print("  ✅ Email")
+            # اسکرین‌شات قبل از Submit
+            await page.wait_for_timeout(800)
+            await page.screenshot(path=SS_FILLED, full_page=True)
+            print(f"📸 اسکرین‌شات فرم پر شده: {SS_FILLED}")
 
-            await locators["password"].fill(FAKE_DATA["password"])
-            print("  ✅ Password")
+            # ── کلیک روی Submit ─────────────────────────────────
+            print("\n🖱️  کلیک روی Submit...")
+            submit = page.locator(
+                "//div[@role='button'][.//span[normalize-space()='Submit']]"
+            ).first
+            if await submit.count() == 0:
+                # fallback
+                submit = page.get_by_role("button", name="Submit", exact=True).first
+            await submit.scroll_into_view_if_needed()
+            await submit.click()
+            print("  ✅ Submit کلیک شد.")
 
-            # ── ترتیب مهم: اول Year، بعد Month، بعد Day ────────
-            # (چون در بعضی نسخه‌ها listbox مشترک است و ترتیب روی
-            #  گزینه‌های visible اثر می‌گذارد)
-            await select_dropdown(page, locators["year"], FAKE_DATA["year"])
-            print(f"  ✅ Year → {FAKE_DATA['year']}")
+            # ── ۱۰ ثانیه صبر ───────────────────────────────────
+            print(f"\n⏳ انتظار {SUBMIT_WAIT/1000:.0f} ثانیه...")
+            await page.wait_for_timeout(SUBMIT_WAIT)
 
-            await select_dropdown(page, locators["month"], FAKE_DATA["month"])
-            print(f"  ✅ Month → {FAKE_DATA['month']}")
+            # ── بررسی وجود reCAPTCHA ────────────────────────────
+            print("\n🔍 بررسی وجود reCAPTCHA...")
+            captcha = await recaptcha_exists(page)
 
-            await select_dropdown(page, locators["day"], FAKE_DATA["day"])
-            print(f"  ✅ Day → {FAKE_DATA['day']}")
+            if captcha is None:
+                # ── reCAPTCHA نبود → همان‌جا اسکرین‌شات ─────
+                print("  ℹ️  reCAPTCHA ظاهر نشد.")
+                await page.screenshot(path=SS_SUBMIT, full_page=True)
+                print(f"📸 اسکرین‌شات بعد از Submit: {SS_SUBMIT}")
 
-            await locators["fullname"].fill(FAKE_DATA["fullname"])
-            print("  ✅ Full Name")
+            else:
+                # ── reCAPTCHA بود → کلیک کن، ۱۰ ثانیه صبر، اسکرین‌شات ─
+                print("  🖱️  کلیک روی چک‌باکس reCAPTCHA...")
+                try:
+                    await captcha.click()
+                    print("  ✅ روی reCAPTCHA کلیک شد.")
+                except Exception as e:
+                    print(f"  ⚠️  کلیک روی reCAPTCHA ناموفق: {e}")
+                    # تلاش دوم: با force
+                    try:
+                        await captcha.click(force=True)
+                        print("  ✅ با force کلیک شد.")
+                    except Exception as e2:
+                        print(f"  ❌ کلیک دوم هم نشد: {e2}")
 
-            await locators["username"].fill(FAKE_DATA["username"])
-            print("  ✅ Username")
+                print(f"\n⏳ انتظار {SUBMIT_WAIT/1000:.0f} ثانیه بعد از کلیک reCAPTCHA...")
+                await page.wait_for_timeout(SUBMIT_WAIT)
+                await page.screenshot(path=SS_CAPTCHA, full_page=True)
+                print(f"📸 اسکرین‌شات بعد از کلیک reCAPTCHA: {SS_CAPTCHA}")
 
-            # ── I agree ──────────────────────────────────────────
-            try:
-                accept = page.get_by_text("I agree", exact=False).first
-                if await accept.is_visible(timeout=2000):
-                    await accept.click()
-                    print("  ✅ I agree تیک زده شد")
-                else:
-                    print("  ℹ️  گزینه I agree وجود ندارد (نرمال)")
-            except Exception:
-                print("  ℹ️  گزینه I agree وجود ندارد (نرمال)")
-
-            print("\n⏸️  Submit زده نمی‌شود.")
-
-            await page.wait_for_timeout(1500)
-            await page.screenshot(path=SCREENSHOT_FINAL, full_page=True)
-            print(f"📸 اسکرین‌شات نهایی: {SCREENSHOT_FINAL}")
+            print("\n🎉 تمام شد!")
 
         except Exception as e:
             print(f"\n❌ خطا: {e}")
             try:
-                await page.screenshot(path=SCREENSHOT_ERROR, full_page=True)
-                print(f"📸 اسکرین‌شات خطا: {SCREENSHOT_ERROR}")
+                await page.screenshot(path=SS_ERROR, full_page=True)
+                print(f"📸 اسکرین‌شات خطا: {SS_ERROR}")
             except Exception:
                 pass
             await browser.close()
             sys.exit(1)
 
         await browser.close()
-        print("\n🎉 تمام شد!")
 
 
 if __name__ == "__main__":
