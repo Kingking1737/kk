@@ -1,39 +1,173 @@
-name: Instagram Signup Form Filler
+import asyncio
+import sys
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
-on:
-  workflow_dispatch:
-  push:
-    branches: [main]
+# ── اطلاعات ساختگی ──────────────────────────────────────────────
+FAKE_DATA = {
+    "email":    "kingkngdbjodbno@llf.com",
+    "password": "Kingking00Q)@)",
+    "day":      "1",
+    "month":    "January",
+    "year":     "1999",
+    "fullname": "fjofjinoervnervnioernvemoe",
+    "username": "klfeir",
+}
 
-jobs:
-  fill-signup:
-    runs-on: ubuntu-latest
+SIGNUP_URL = "https://www.instagram.com/accounts/emailsignup/?hl=en"
+SCREENSHOT_FINAL = "instagram_signup_filled.png"
+SCREENSHOT_ERROR = "error_missing_element.png"
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+async def find_and_check(page, name, locator, timeout=15000):
+    """بررسی وجود یک المان با لاکیتور دلخواه"""
+    try:
+        await locator.first.wait_for(state="visible", timeout=timeout)
+        print(f"  ✅ {name} → پیدا شد")
+        return True
+    except PlaywrightTimeoutError:
+        print(f"  ❌ {name} → پیدا نشد")
+        return False
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
 
-      - name: Run signup filler script
-        run: python fill_signup.py
+async def main():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        context = await browser.new_context(
+            viewport={"width": 1366, "height": 900},
+            locale="en-US",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
+        )
+        page = await context.new_page()
 
-      - name: Upload screenshot as artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: instagram-signup-screenshot
-          path: |
-            instagram_signup_filled.png
-            error_missing_element.png
-          if-no-files-found: warn
-          retention-days: 30
+        print(f"🌐 باز کردن صفحه: {SIGNUP_URL}")
+        await page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=60_000)
+        # کمی صبر می‌کنیم تا صفحه کامل رندر شود
+        await page.wait_for_timeout(3000)
+
+        # اگر کوکی‌بنر یا دیالوگ پیش‌فرض آمد، ببند
+        for txt in ["Allow all cookies", "Accept", "Only allow essential cookies"]:
+            try:
+                btn = page.get_by_role("button", name=txt, exact=False).first
+                if await btn.is_visible(timeout=1500):
+                    await btn.click()
+                    print(f"  🍪 بنر کوکی بسته شد: {txt}")
+                    await page.wait_for_timeout(800)
+            except Exception:
+                pass
+
+        print("✅ صفحه بارگذاری شد.\n")
+
+        # ── لاکیتورها با سلکتورهای مقاوم ────────────────────────
+        # Email/Phone: با label متنی
+        email_loc = page.locator(
+            "//label[normalize-space()='Mobile number or email']/preceding-sibling::input"
+        )
+        # Password: با type
+        password_loc = page.locator("input[type='password']")
+        # Month / Day / Year: با aria-label
+        month_loc = page.locator("div[aria-label='Select Month']")
+        day_loc   = page.locator("div[aria-label='Select Day']")
+        year_loc  = page.locator("div[aria-label='Select Year']")
+        # Full Name: با label متنی (aria-label ندارد)
+        fullname_loc = page.locator(
+            "//label[normalize-space()='Full name']/preceding-sibling::input"
+        )
+        # Username: aria-label دارد
+        username_loc = page.locator("input[aria-label='Username']")
+
+        elements = {
+            "email":    email_loc,
+            "password": password_loc,
+            "month":    month_loc,
+            "day":      day_loc,
+            "year":     year_loc,
+            "fullname": fullname_loc,
+            "username": username_loc,
+        }
+
+        print("🔍 بررسی وجود المان‌ها:")
+        missing = []
+        for name, loc in elements.items():
+            ok = await find_and_check(page, name, loc)
+            if not ok:
+                missing.append(name)
+
+        if missing:
+            print(f"\n❌ این المان‌ها پیدا نشدند: {missing}")
+            await page.screenshot(path=SCREENSHOT_ERROR, full_page=True)
+            print(f"📸 اسکرین‌شات خطا ذخیره شد: {SCREENSHOT_ERROR}")
+            await browser.close()
+            sys.exit(1)
+
+        print("\n✏️  پر کردن فیلدها...")
+
+        # ── Email ────────────────────────────────────────────────
+        await email_loc.fill(FAKE_DATA["email"])
+        print("  ✅ Email")
+
+        # ── Password ─────────────────────────────────────────────
+        await password_loc.fill(FAKE_DATA["password"])
+        print("  ✅ Password")
+
+        # ── Month ────────────────────────────────────────────────
+        await month_loc.click()
+        await page.wait_for_timeout(600)
+        await page.locator("div[role='option']").filter(
+            has_text=FAKE_DATA["month"]
+        ).first.click()
+        print(f"  ✅ Month → {FAKE_DATA['month']}")
+
+        # ── Day ──────────────────────────────────────────────────
+        await day_loc.click()
+        await page.wait_for_timeout(600)
+        await page.locator("div[role='option']").filter(
+            has_text=FAKE_DATA["day"]
+        ).first.click()
+        print(f"  ✅ Day → {FAKE_DATA['day']}")
+
+        # ── Year ─────────────────────────────────────────────────
+        await year_loc.click()
+        await page.wait_for_timeout(600)
+        await page.locator("div[role='option']").filter(
+            has_text=FAKE_DATA["year"]
+        ).first.click()
+        print(f"  ✅ Year → {FAKE_DATA['year']}")
+
+        # ── Full Name ────────────────────────────────────────────
+        await fullname_loc.fill(FAKE_DATA["fullname"])
+        print("  ✅ Full Name")
+
+        # ── Username ─────────────────────────────────────────────
+        await username_loc.fill(FAKE_DATA["username"])
+        print("  ✅ Username")
+
+        # ── تیک I accept (اگر وجود داشت) ─────────────────────────
+        try:
+            accept = page.get_by_text("I agree", exact=False).first
+            if await accept.is_visible(timeout=2000):
+                await accept.click()
+                print("  ✅ I accept تیک زده شد")
+            else:
+                print("  ℹ️  گزینه I accept وجود ندارد (نرمال است)")
+        except Exception:
+            print("  ℹ️  گزینه I accept وجود ندارد (نرمال است)")
+
+        print("\n⏸️  Submit زده نمی‌شود (طبق درخواست).")
+
+        await page.wait_for_timeout(1200)
+        await page.screenshot(path=SCREENSHOT_FINAL, full_page=True)
+        print(f"📸 اسکرین‌شات نهایی: {SCREENSHOT_FINAL}")
+
+        await browser.close()
+        print("\n🎉 تمام شد!")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
